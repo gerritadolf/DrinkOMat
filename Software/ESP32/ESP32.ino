@@ -59,6 +59,18 @@ void handlePost() {
   String body = server.arg("plain");
   deserializeJson(jsonDocument, body);
 
+  JsonArray a = jsonDocument[ "receipt" ].as<JsonArray>();
+
+  for ( JsonObject o : a )
+  {
+    for ( JsonPair p : o)
+    {
+        Serial.print( p.key().c_str() );
+        Serial.print( " = " );
+        Serial.println( p.value().as<int>() );
+    }
+  }
+
   server.send(200, "application/json", "{}");
 
   shouldBlink = true;
