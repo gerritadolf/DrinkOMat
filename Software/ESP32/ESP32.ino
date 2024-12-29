@@ -1,6 +1,11 @@
 #include <Wire.h>
 #include <SH1106.h>
 
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ArduinoJson.h>
+
 // GPIO button config
 #define BUTTON 25
 #define BUTTON_LED 33
@@ -30,17 +35,67 @@ struct Button {
 };
 
 Button button1 = {BUTTON, 0, false};
-uint32_t amountOfBlinks = 10;
-bool isBlinkPinActive = false;
-uint32_t counter = 0;
+bool isBlinking = false;
 bool shouldBlink = false;
+
+WebServer server(80);
+StaticJsonDocument<250> jsonDocument;
+char buffer[250];
+const char *SSID = "<SSID>";
+const char *PWD = "<PWD>";
 
 
 SH1106 display(0x3c, CLK, SDA); 
 
 void IRAM_ATTR isr() {
-	button1.numberKeyPresses++;
-	button1.pressed = true;
+	  shouldBlink = true;
+    delay(10000);
+    shouldBlink = false;
+}
+
+void handlePost() {
+  if (server.hasArg("plain") == false) {
+  }
+  String body = server.arg("plain");
+  deserializeJson(jsonDocument, body);
+
+  server.send(200, "application/json", "{}");
+
+  shouldBlink = true;
+  delay(10000);
+  shouldBlink = false;
+  
+}
+
+void setup_routing() {     
+ // server.on("/status", getStatus);          
+  server.on("/drink", HTTP_POST, handlePost);    
+          
+  server.begin();    
+}
+
+void blinky(void * parameter) {
+  for(;;) {
+    if (shouldBlink) {
+        isBlinking = !isBlinking;
+        digitalWrite(BUTTON_LED, isBlinking);
+    } else {
+       digitalWrite(BUTTON_LED, false);
+       isBlinking = false;
+    }
+    delay(500);
+  }
+}
+
+void setup_task() {    
+  xTaskCreate(     
+  blinky,      
+  "Set the blinky led of button",      
+  1000,      
+  NULL,      
+  1,     
+  NULL     
+  );     
 }
 
 void setup() {
@@ -58,31 +113,21 @@ void setup() {
   display.clear();
   display.println("Hello world!");
   display.display();
+
+
+    WiFi.begin(SSID, PWD);
+    while (WiFi.status() != WL_CONNECTED) {
+      Serial.print(".");
+      delay(500);
+    }
+ 
+  Serial.print("Connected! IP Address: ");
+  Serial.println(WiFi.localIP());  
+  setup_routing();     
+  setup_task();
 }
 
 void loop() {
-	if (button1.pressed) {
-		Serial.printf("Button has been pressed %u times\n", button1.numberKeyPresses);
-		button1.pressed = false;
-    shouldBlink = true;
-
-    digitalWrite(BUTTON_LED, HIGH);
-    isBlinkPinActive = true;
-	}
-
-  if (counter == amountOfBlinks * 2) {
-    shouldBlink = false;
-     digitalWrite(BUTTON_LED, false);
-     isBlinkPinActive = false;
-     counter = 0;
-  }
-  if (shouldBlink) {
-      if (counter % 2 == 0) {
-          isBlinkPinActive = !isBlinkPinActive;
-          digitalWrite(BUTTON_LED, isBlinkPinActive);
-      }
-      counter++;
-  }
-
+  server.handleClient();
   delay(500);
 }
