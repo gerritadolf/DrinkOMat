@@ -4,7 +4,11 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <vector>
 #include <ArduinoJson.h>
+
+// MAX Amount for each drink in ml
+#define MAX_AMOUNT 500
 
 // GPIO button config
 #define BUTTON 25
@@ -28,17 +32,20 @@
 #define MEMBRANE_PUMP 27
 #define PERISTALTIC_PUMP 26 
 
-struct Button {
-	const uint8_t PIN;
-	uint32_t numberKeyPresses;
-	bool pressed;
-};
+// Define the amount of fluid extruded by the pumps in 60 seconds in ml
+#define PERISTALTIC_PUMP_FPM 500
+#define MEMBRANE_PUMP_FPM 200 // TODO: CHANGE FOR REAL VALUE
+
+// Time that fluid need for the pump and pipes to reach the extruder in ms
+#define MEMBRANE_FLUID_DELAY 1000 // TODO: MEASURE REAL VALUES
+#define PERISTALTIC_FLUID_DELAY 500 // TODO: MEASURE REAL VALUES
 
 struct ReceiptStep{
   int valve;
   int amount;
   bool carbonated;
 };
+std::vector<ReceiptStep> steps;
 
 int valves[] = {
   V1,
@@ -49,12 +56,11 @@ int valves[] = {
   V5,
   V6,
   V7,
-  V8
+  V8 // carbonated valve
 };
 
-Button button1 = {BUTTON, 0, false};
 bool isBlinking = false;
-bool shouldBlink = false;
+bool isBusy = false; // indicated if device is currently busy (i.e making a drink)
 
 WebServer server(80);
 StaticJsonDocument<250> jsonDocument;
@@ -65,11 +71,20 @@ const char *PWD = "<PWD>";
 
 SH1106 display(0x3c, CLK, SDA); 
 
+bool buttonPressed = false;
 void IRAM_ATTR isr2() {
-	  shouldBlink = true;
+  if (!isBusy) {
+      buttonPressed = true;
+  }
+    
 }
 
 void handlePost() {
+  if (isBusy) {
+    server.send(400, "application/json", "{\"error\": \"The device is making a drink and does not accept new receipts at this time.\"}");
+    return;
+  }
+
   if (server.hasArg("plain") == false) {
   }
   String body = server.arg("plain");
@@ -77,11 +92,13 @@ void handlePost() {
 
   JsonArray a = jsonDocument[ "receipt" ].as<JsonArray>();
 
-  bool hasError;
+  bool hasError = false;
   String error = "";
 
-  ReceiptStep steps[a.size()];
+  steps.clear();
+  steps.resize(a.size());
   int index = 0;
+  int totalAmount = 0;
   for ( JsonObject o : a )
   {
     ReceiptStep step;
@@ -110,12 +127,19 @@ void handlePost() {
       break;
     }
 
-    // TODO: Add up total amount of fluid and check for max capacity (e.g 500ml)
-
-    if (step.amount <= 0 || step.amount > 1000) {
+    if (step.amount <= 0 || step.amount > MAX_AMOUNT) {
       hasError = true;
-      error = "Invalid amount detected! Valid values are between 1 and 1000 ml";
+      error = "Invalid amount detected! Valid values are between 1 and " + String(MAX_AMOUNT) + " ml";
       break;
+    }
+
+    totalAmount += step.amount;
+
+    // When TotalAmount is reached, abort
+    if (totalAmount > MAX_AMOUNT) {
+        hasError = true;
+        error = "Invalid receipt! Max drink size is " + String(MAX_AMOUNT) + " ml (this receipt has " + String(totalAmount) + " ml).";
+        break;
     }
 
     steps[index] = step;
@@ -125,18 +149,15 @@ void handlePost() {
 
   if (hasError == true) {
     server.send(400, "application/json", "{\"error\": \"" + error + "\"}");
+    steps.clear();
     return;
   } else {
     server.send(200, "application/json", "{}");
   }
 
-  // Set idle LED
-  shouldBlink = true;
+  digitalWrite(BUTTON_LED, true);
 
-  delay(10000);
 
-  shouldBlink = true;
-  
 }
 
 void setup_routing() {     
@@ -148,14 +169,70 @@ void setup_routing() {
 
 void blinky(void * parameter) {
   for(;;) {
-    if (shouldBlink) {
+    if (isBusy) {
         isBlinking = !isBlinking;
         digitalWrite(BUTTON_LED, isBlinking);
     } else {
-       digitalWrite(BUTTON_LED, false);
        isBlinking = false;
     }
-    delay(500);
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+  }
+}
+
+void prepareDrink(void * parameter) { 
+  for(;;) {
+  if (buttonPressed == true) {
+    buttonPressed = false;
+
+    if (steps.size() == 0) {
+      digitalWrite(BUTTON_LED, true);
+      vTaskDelay(200 / portTICK_PERIOD_MS);
+      digitalWrite(BUTTON_LED, false);
+      vTaskDelay(200 / portTICK_PERIOD_MS);
+      digitalWrite(BUTTON_LED, true);
+      vTaskDelay(200 / portTICK_PERIOD_MS);
+      digitalWrite(BUTTON_LED, false);
+      vTaskDelay(200 / portTICK_PERIOD_MS);
+      digitalWrite(BUTTON_LED, true);
+      vTaskDelay(200 / portTICK_PERIOD_MS);
+      digitalWrite(BUTTON_LED, false);
+      continue;
+    }
+    // Now execute every step!
+    // Set idle LED
+    isBusy = true;
+    for(ReceiptStep step: steps) {
+        // Is this step carbonated?
+        int pump;
+        int duration;
+        if (step.carbonated == true) {
+            // Open carbonated valve, so the way of the fluid does not redirect via peristaltic pump
+            digitalWrite(V8, HIGH);
+            pump = MEMBRANE_PUMP;
+            
+            duration = MEMBRANE_FLUID_DELAY + ((60000 * step.amount) / MEMBRANE_PUMP_FPM);
+        } else {
+          pump = PERISTALTIC_PUMP;
+
+          duration = PERISTALTIC_FLUID_DELAY + ((60000 * step.amount) / PERISTALTIC_PUMP_FPM);  
+          digitalWrite(V8, LOW);
+        }
+        digitalWrite(valves[step.valve], HIGH); // Set valve for drink
+         vTaskDelay(1000 / portTICK_PERIOD_MS);
+
+        // Enable pump
+        digitalWrite(pump, HIGH);
+         vTaskDelay(duration / portTICK_PERIOD_MS);
+        digitalWrite(pump, LOW);
+
+        digitalWrite(V8, LOW);
+        digitalWrite(valves[step.valve], LOW);
+    }
+    isBusy = false;
+    digitalWrite(BUTTON_LED, true);
+  }
+
+  vTaskDelay(500 / portTICK_PERIOD_MS);
   }
 }
 
@@ -163,6 +240,15 @@ void setup_task() {
   xTaskCreate(     
   blinky,      
   "Set the blinky led of button",      
+  1000,      
+  NULL,      
+  1,     
+  NULL     
+  );     
+
+    xTaskCreate(     
+  prepareDrink,      
+  "Prepare task routine",      
   1000,      
   NULL,      
   1,     
@@ -176,7 +262,7 @@ void setup_debug() {
   }
   digitalWrite(MEMBRANE_PUMP, HIGH);
   digitalWrite(PERISTALTIC_PUMP, HIGH);
-  digitalWrite(BUTTON_LED, HIGH);
+  digitalWrite(BUTTON_LED, LOW);
 
   delay(1000);
 
@@ -186,7 +272,6 @@ void setup_debug() {
   }
   digitalWrite(MEMBRANE_PUMP, LOW);
   digitalWrite(PERISTALTIC_PUMP, LOW);
-  digitalWrite(BUTTON_LED, LOW);
 }
 
 void setup() {
