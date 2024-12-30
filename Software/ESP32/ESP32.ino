@@ -34,6 +34,12 @@ struct Button {
 	bool pressed;
 };
 
+struct ReceiptStep{
+  int valve;
+  int amount;
+  bool carbonated;
+};
+
 Button button1 = {BUTTON, 0, false};
 bool isBlinking = false;
 bool shouldBlink = false;
@@ -61,21 +67,63 @@ void handlePost() {
 
   JsonArray a = jsonDocument[ "receipt" ].as<JsonArray>();
 
+  bool hasError;
+  String error = "";
+
+  ReceiptStep steps[a.size()];
+  int index = 0;
   for ( JsonObject o : a )
   {
+    ReceiptStep step;
     for ( JsonPair p : o)
     {
+        String key = p.key().c_str();
+        if (key == "valve") {
+            step.valve = p.value().as<int>();
+        } else if (key == "amount"){
+            step.amount = p.value().as<int>();
+        } else if (key == "carbonated") {
+            step.carbonated = p.value().as<bool>();
+        } else {
+            hasError = true;
+            error = "Unknown field: " + key; 
+        } 
+
         Serial.print( p.key().c_str() );
         Serial.print( " = " );
         Serial.println( p.value().as<int>() );
     }
+    // Valve setup is invalid
+    if ((step.valve <= 0) || (step.valve > 8)) {
+      hasError = true;
+      error = "Invalid valve selection detected!";
+      break;
+    }
+
+    if (step.amount <= 0 || step.amount > 1000) {
+      hasError = true;
+      error = "Invalid amount detected! Valid values are between 1 and 1000 ml";
+      break;
+    }
+
+    steps[index] = step;
+
+    index++;
   }
 
-  server.send(200, "application/json", "{}");
+  if (hasError == true) {
+    server.send(400, "application/json", "{\"error\": \"" + error + "\"}");
+    return;
+  } else {
+    server.send(200, "application/json", "{}");
+  }
+
+  // Set idle LED
+  shouldBlink = true;
+
+  delay(10000);
 
   shouldBlink = true;
-  delay(10000);
-  shouldBlink = false;
   
 }
 
