@@ -40,6 +40,18 @@ struct ReceiptStep{
   bool carbonated;
 };
 
+int valves[] = {
+  V1,
+  V1,
+  V2,
+  V3,
+  V4,
+  V5,
+  V6,
+  V7,
+  V8
+};
+
 Button button1 = {BUTTON, 0, false};
 bool isBlinking = false;
 bool shouldBlink = false;
@@ -53,10 +65,8 @@ const char *PWD = "<PWD>";
 
 SH1106 display(0x3c, CLK, SDA); 
 
-void IRAM_ATTR isr() {
+void IRAM_ATTR isr2() {
 	  shouldBlink = true;
-    delay(10000);
-    shouldBlink = false;
 }
 
 void handlePost() {
@@ -160,16 +170,38 @@ void setup_task() {
   );     
 }
 
-void setup() {
-	Serial.begin(115200);
-	pinMode(button1.PIN, INPUT_PULLUP);
-  pinMode(33, OUTPUT);
-	attachInterrupt(button1.PIN, isr, FALLING);
+void setup_debug() {
+  for(int valve : valves) {
+      digitalWrite(valve, HIGH);
+  }
+  digitalWrite(MEMBRANE_PUMP, HIGH);
+  digitalWrite(PERISTALTIC_PUMP, HIGH);
+  digitalWrite(BUTTON_LED, HIGH);
 
-  digitalWrite(BUTTON_LED, true);
   delay(1000);
-  digitalWrite(BUTTON_LED, false);
 
+
+  for(int valve : valves) {
+      digitalWrite(valve, LOW);
+  }
+  digitalWrite(MEMBRANE_PUMP, LOW);
+  digitalWrite(PERISTALTIC_PUMP, LOW);
+  digitalWrite(BUTTON_LED, LOW);
+}
+
+void setup() {
+  for(int valve : valves) {
+      pinMode(valve, OUTPUT);
+  }
+  pinMode(MEMBRANE_PUMP, OUTPUT);
+  pinMode(PERISTALTIC_PUMP, OUTPUT);
+
+	Serial.begin(115200);
+	pinMode(BUTTON, INPUT_PULLUP);
+  pinMode(33, OUTPUT);
+	attachInterrupt(BUTTON, isr2, FALLING);
+
+  setup_debug();
 
   display.init();
   display.clear();
