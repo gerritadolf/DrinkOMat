@@ -15,8 +15,8 @@
 #define BUTTON_LED 33
 
 // GPIO I2C for OLED
-#define CLK 21
-#define SDA 22
+#define CLK 22
+#define SDA 21
 
 // GPIO for Valves
 #define V1 2
@@ -40,6 +40,19 @@
 #define MEMBRANE_FLUID_DELAY 1000 // TODO: MEASURE REAL VALUES
 #define PERISTALTIC_FLUID_DELAY 500 // TODO: MEASURE REAL VALUES
 
+
+// OLED MESSAGES
+#define WELCOME "Moin."
+#define NO_RECEIPT "Kein Rezept ausgewählt"
+#define INVALID_RECEIPT "Ungültiges Rezept"
+#define PREPARING "Zubereiten..."
+#define READY "Bereit"
+#define PRESS_START "Zum Start Knopf drücken"
+#define BON_APPETIT "Prost!"
+bool hasStateChanged = false;
+int displayState = 0;
+
+String receiptName;
 struct ReceiptStep{
   int valve;
   int amount;
@@ -61,6 +74,7 @@ int valves[] = {
 
 bool isBlinking = false;
 bool isBusy = false; // indicated if device is currently busy (i.e making a drink)
+TaskHandle_t taskHandle = NULL;
 
 WebServer server(80);
 StaticJsonDocument<250> jsonDocument;
@@ -73,9 +87,44 @@ SH1106 display(0x3c, CLK, SDA);
 
 bool buttonPressed = false;
 void IRAM_ATTR isr2() {
+  static unsigned long lastInterruptTime = 0;
+  unsigned long interruptTime = millis();
+  if (interruptTime - lastInterruptTime < 50) { 
+    return;
+  }
+
+  lastInterruptTime = interruptTime;
+
   if (!isBusy) {
       buttonPressed = true;
-  }
+  } 
+  
+  // else {
+  //   // ABORT CURRENT OPERATION
+  //   vTaskDelete(taskHandle); // Lösche die Task
+  //   taskHandle = NULL;
+
+  //   for(int valve : valves) {
+  //     digitalWrite(valve, LOW);
+  //   }
+  //   digitalWrite(MEMBRANE_PUMP, LOW);
+  //   digitalWrite(PERISTALTIC_PUMP, LOW);
+
+  //   buttonPressed = false;
+  //   // Restart task for preparing drinks
+  //   xTaskCreate(     
+  //     prepareDrink,      
+  //     "Prepare task routine",      
+  //     1000,      
+  //     NULL,      
+  //     1,     
+  //     &taskHandle     
+  //     );   
+
+  //   // reset isBusy
+  //   isBusy = false;
+
+  // }
     
 }
 
@@ -91,7 +140,7 @@ void handlePost() {
   deserializeJson(jsonDocument, body);
 
   JsonArray a = jsonDocument[ "receipt" ].as<JsonArray>();
-
+  receiptName = jsonDocument[ "name" ].as<String>();
   bool hasError = false;
   String error = "";
 
@@ -150,13 +199,16 @@ void handlePost() {
   if (hasError == true) {
     server.send(400, "application/json", "{\"error\": \"" + error + "\"}");
     steps.clear();
+    displayState = 2;
+    hasStateChanged = true;
     return;
   } else {
     server.send(200, "application/json", "{}");
   }
 
   digitalWrite(BUTTON_LED, true);
-
+  displayState = 4;
+  hasStateChanged = true;
 
 }
 
@@ -185,6 +237,8 @@ void prepareDrink(void * parameter) {
     buttonPressed = false;
 
     if (steps.size() == 0) {
+        displayState = 1;
+        hasStateChanged = true;
       digitalWrite(BUTTON_LED, true);
       vTaskDelay(200 / portTICK_PERIOD_MS);
       digitalWrite(BUTTON_LED, false);
@@ -201,6 +255,9 @@ void prepareDrink(void * parameter) {
     // Now execute every step!
     // Set idle LED
     isBusy = true;
+
+    displayState = 3;
+    hasStateChanged = true;
     for(ReceiptStep step: steps) {
         // Is this step carbonated?
         int pump;
@@ -230,6 +287,14 @@ void prepareDrink(void * parameter) {
     }
     isBusy = false;
     digitalWrite(BUTTON_LED, true);
+
+    displayState = 5;
+    hasStateChanged = true;
+
+    vTaskDelay(4000 / portTICK_PERIOD_MS);
+
+    displayState = 4;
+    hasStateChanged = true;
   }
 
   vTaskDelay(500 / portTICK_PERIOD_MS);
@@ -252,7 +317,7 @@ void setup_task() {
   1000,      
   NULL,      
   1,     
-  NULL     
+  &taskHandle     
   );     
 }
 
@@ -289,8 +354,10 @@ void setup() {
   setup_debug();
 
   display.init();
+  display.flipScreenVertically();
   display.clear();
-  display.println("Hello world!");
+  display.setTextAlignment(TEXT_ALIGN_CENTER_BOTH);
+  display.drawString(64, 32, WELCOME);
   display.display();
 
 
@@ -304,9 +371,50 @@ void setup() {
   Serial.println(WiFi.localIP());  
   setup_routing();     
   setup_task();
+
+  displayState = 1;
+  hasStateChanged = true;
 }
 
 void loop() {
+  if (hasStateChanged) {
+    hasStateChanged = false;
+    display.clear();
+
+    switch (displayState) {
+      case 0:
+        display.drawString(64, 32, WELCOME);
+        break;
+      case 1:
+        display.drawString(64, 32, NO_RECEIPT);
+        break;
+      case 2:
+        display.drawString(64, 32, INVALID_RECEIPT);
+        break;
+      case 3:
+        if(receiptName.length() > 0) {
+          display.drawString(64, 16, receiptName);
+          display.drawString(64, 48, PREPARING);
+        } else {
+          display.drawString(64, 32, PREPARING);
+        }
+        break;
+      case 4:
+        if(receiptName.length() > 0) {
+          display.drawString(64, 16, receiptName);
+        } else {
+          display.drawString(64, 16, READY);
+        }
+         
+         display.drawString(64, 48, PRESS_START);
+        break;
+      case 5:
+         display.drawString(64, 32, BON_APPETIT);
+        break;
+    }
+    display.display();
+  }
+
   server.handleClient();
   delay(500);
 }
