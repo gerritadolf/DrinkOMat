@@ -100,6 +100,8 @@ void handlePost() {
       break;
     }
 
+    // TODO: Add up total amount of fluid and check for max capacity (e.g 500ml)
+
     if (step.amount <= 0 || step.amount > 1000) {
       hasError = true;
       error = "Invalid amount detected! Valid values are between 1 and 1000 ml";
