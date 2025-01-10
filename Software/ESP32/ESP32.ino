@@ -86,46 +86,10 @@ const char *PWD = "<PWD>";
 SH1106 display(0x3c, CLK, SDA); 
 
 bool buttonPressed = false;
-void IRAM_ATTR isr2() {
-  static unsigned long lastInterruptTime = 0;
-  unsigned long interruptTime = millis();
-  if (interruptTime - lastInterruptTime < 50) { 
-    return;
-  }
-
-  lastInterruptTime = interruptTime;
-
+void IRAM_ATTR isr1() {
   if (!isBusy) {
-      buttonPressed = true;
+        buttonPressed = true;
   } 
-  
-  // else {
-  //   // ABORT CURRENT OPERATION
-  //   vTaskDelete(taskHandle); // Lösche die Task
-  //   taskHandle = NULL;
-
-  //   for(int valve : valves) {
-  //     digitalWrite(valve, LOW);
-  //   }
-  //   digitalWrite(MEMBRANE_PUMP, LOW);
-  //   digitalWrite(PERISTALTIC_PUMP, LOW);
-
-  //   buttonPressed = false;
-  //   // Restart task for preparing drinks
-  //   xTaskCreate(     
-  //     prepareDrink,      
-  //     "Prepare task routine",      
-  //     1000,      
-  //     NULL,      
-  //     1,     
-  //     &taskHandle     
-  //     );   
-
-  //   // reset isBusy
-  //   isBusy = false;
-
-  // }
-    
 }
 
 void handlePost() {
@@ -231,6 +195,32 @@ void blinky(void * parameter) {
   }
 }
 
+const unsigned long debounceDelay = 50; // Entprellzeit in Millisekunden
+bool lastButtonState = HIGH; // Letzter Zustand des Tasters (HIGH - nicht gedrückt)
+unsigned long lastDebounceTime = 0; // Zeit des letzten Wechsels
+void buttonPress(void * parameter) {
+  for(;;) {
+    int reading = digitalRead(BUTTON); // Lese den aktuellen Zustand des Tasters
+
+    if (reading != lastButtonState) {
+        lastDebounceTime = millis(); // Aktualisiere die Zeit des letzten Wechsels
+    }
+
+    if ((millis() - lastDebounceTime) > debounceDelay) {
+        if (reading == LOW && !buttonPressed) {
+            buttonPressed = true; // Setze das Flag für gedrückten Taster
+            Serial.println("Taster gedrückt!"); // Aktion durchführen
+            vTaskDelay(550 / portTICK_PERIOD_MS);
+        }
+        else {
+          buttonPressed = false;
+        }
+    }
+
+    lastButtonState = reading; // Aktuellen Zustand speichern
+  }
+}
+
 void prepareDrink(void * parameter) { 
   for(;;) {
   if (buttonPressed == true) {
@@ -318,7 +308,16 @@ void setup_task() {
   NULL,      
   1,     
   &taskHandle     
-  );     
+  );   
+
+      xTaskCreate(     
+  buttonPress,      
+  "Check for button press",      
+  1000,      
+  NULL,      
+  1,     
+  NULL
+  );      
 }
 
 void setup_debug() {
@@ -348,10 +347,7 @@ void setup() {
 
 	Serial.begin(115200);
 	pinMode(BUTTON, INPUT_PULLUP);
-  pinMode(33, OUTPUT);
-	attachInterrupt(BUTTON, isr2, FALLING);
-
-  setup_debug();
+  pinMode(BUTTON_LED, OUTPUT);
 
   display.init();
   display.flipScreenVertically();
