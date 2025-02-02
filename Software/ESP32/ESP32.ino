@@ -1,11 +1,28 @@
-#include <Wire.h>
+
 #include <SH1106.h>
 
-#include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include <vector>
 #include <ArduinoJson.h>
+
+// BLE
+#include <BLEDevice.h>
+#include <BLEServer.h>
+ #include <BLE2902.h>
+#include <Preferences.h>
+
+// BLE variables
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define MESSAGE_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
+#define DEVINFO_UUID (uint16_t)0x180a
+#define DEVINFO_MANUFACTURER_UUID (uint16_t)0x2a29
+#define DEVINFO_NAME_UUID (uint16_t)0x2a24
+#define DEVINFO_SERIAL_UUID (uint16_t)0x2a25
+
+#define DEVICE_MANUFACTURER "GJM Systems"
+#define DEVICE_NAME "DoM v1"
+
 
 // MAX Amount for each drink in ml
 #define MAX_AMOUNT 500
@@ -41,6 +58,8 @@
 #define PERISTALTIC_FLUID_DELAY 500 // TODO: MEASURE REAL VALUES
 
 
+
+
 // OLED MESSAGES
 #define WELCOME "Moin."
 #define NO_RECEIPT "Kein Rezept ausgewählt"
@@ -49,6 +68,7 @@
 #define READY "Bereit"
 #define PRESS_START "Zum Start Knopf drücken"
 #define BON_APPETIT "Prost!"
+
 bool hasStateChanged = false;
 int displayState = 0;
 
@@ -77,12 +97,6 @@ bool isBusy = false; // indicated if device is currently busy (i.e making a drin
 TaskHandle_t taskHandle = NULL;
 
 WebServer server(80);
-StaticJsonDocument<250> jsonDocument;
-char buffer[250];
-const char *SSID = "<SSID>";
-const char *PWD = "<PWD>";
-
-
 SH1106 display(0x3c, CLK, SDA); 
 
 bool buttonPressed = false;
@@ -93,6 +107,7 @@ void IRAM_ATTR isr1() {
 }
 
 void handlePost() {
+  StaticJsonDocument<250> jsonDocument;
   if (isBusy) {
     server.send(400, "application/json", "{\"error\": \"The device is making a drink and does not accept new receipts at this time.\"}");
     return;
@@ -291,6 +306,129 @@ void prepareDrink(void * parameter) {
   }
 }
 
+// BLE 
+BLECharacteristic *characteristicMessage;
+Preferences preferences;   
+
+
+void connectToWiFi(const char* ssid, const char* password) {
+      WiFi.begin(ssid, password);
+      Serial.print(F("Connecting to WiFi"));
+      while (WiFi.status() != WL_CONNECTED && WiFi.status() != WL_CONNECT_FAILED && WiFi.status() != WL_NO_SSID_AVAIL) {
+          delay(500);
+          Serial.println(WiFi.status());
+      }
+
+      if (WiFi.status() == WL_CONNECTED) {
+        displayState = 7;
+        hasStateChanged = true;
+
+        // Save SSID
+        preferences.begin("WiFi", false);
+        preferences.putString("SSID", ssid);
+        preferences.putString("Password", password);
+        preferences.end();
+
+        // Write the IP address to the BLE characteristic with format [IPAddress]IP_ADDRESS
+        String ip = WiFi.localIP().toString();
+        String message = "[IPAddress]" + ip;
+        characteristicMessage->setValue(message.c_str());
+
+        setup_routing();
+      } else if (WiFi.status() == WL_CONNECT_FAILED || WiFi.status() == WL_NO_SSID_AVAIL) {
+        String message = "[Error]InvalidCredentials";
+        characteristicMessage->setValue(message.c_str());
+        displayState = 6;
+        hasStateChanged = true;
+      } else {
+        String message = "[Error]UnkownError";
+        characteristicMessage->setValue(message.c_str());
+        displayState = 6;
+        hasStateChanged = true;
+      }
+
+      // Send data
+      characteristicMessage->notify();
+
+       delay(4000);
+
+      displayState = 1;
+      hasStateChanged = true;
+}
+
+class MyServerCallbacks : public BLEServerCallbacks
+{
+    void onDisconnect(BLEServer *server)
+    {
+        server->getAdvertising()->start();
+    }
+};
+
+class MessageCallbacks : public BLECharacteristicCallbacks
+{
+    void onWrite(BLECharacteristic *characteristic)
+    {
+      // Serial.println("onWrite Vlaue");
+        std::string data = characteristic->getValue();
+
+        if (data.find("[ssid]") != 0) {
+            // Serial.println("Invalid data format");
+            return;
+        }
+
+        // Extract SSID and Password
+        int ssidStart = data.find("[ssid]") + 6;
+        int ssidEnd = data.find("[PWD]");
+        int pwdStart = ssidEnd + 5;
+        String ssid = data.substr(ssidStart, ssidEnd - ssidStart).c_str();
+        String password = data.substr(pwdStart).c_str();
+
+        // Connect to WiFi
+        connectToWiFi(ssid.c_str(), password.c_str());
+    }
+
+    void onRead(BLECharacteristic *characteristic)
+    {
+        std::string data = characteristic->getValue();
+        // Serial.println(data.c_str());
+        // Serial.println("onRead Value");
+    }
+};
+
+void setupBLE() {
+   // Serial.println("Setup BLE Server");
+      // Setup BLE Server
+    BLEDevice::init(DEVICE_NAME);
+    BLEServer *server = BLEDevice::createServer();
+    server->setCallbacks(new MyServerCallbacks());
+
+    // Register message service that can receive messages and reply with a static message.
+    BLEService *service = server->createService(SERVICE_UUID);
+    characteristicMessage = service->createCharacteristic(MESSAGE_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_WRITE);
+    characteristicMessage->setCallbacks(new MessageCallbacks());
+    characteristicMessage->addDescriptor(new BLE2902());
+    service->start();
+
+    // Register device info service, that contains the device's UUID, manufacturer and name.
+    service = server->createService(DEVINFO_UUID);
+    BLECharacteristic *characteristic = service->createCharacteristic(DEVINFO_MANUFACTURER_UUID, BLECharacteristic::PROPERTY_READ);
+    characteristic->setValue(DEVICE_MANUFACTURER);
+    characteristic = service->createCharacteristic(DEVINFO_NAME_UUID, BLECharacteristic::PROPERTY_READ);
+    characteristic->setValue(DEVICE_NAME);
+    characteristic = service->createCharacteristic(DEVINFO_SERIAL_UUID, BLECharacteristic::PROPERTY_READ);
+    String chipId = String((uint32_t)(ESP.getEfuseMac() >> 24), HEX);
+    characteristic->setValue(chipId.c_str());
+    service->start();
+
+    // Advertise services
+    BLEAdvertising *advertisement = server->getAdvertising();
+    BLEAdvertisementData adv;
+    adv.setName(DEVICE_NAME);
+    adv.setCompleteServices(BLEUUID(SERVICE_UUID));
+    advertisement->setAdvertisementData(adv);
+    advertisement->start();
+}
+
 void setup_task() {    
   xTaskCreate(     
   blinky,      
@@ -356,19 +494,24 @@ void setup() {
   display.drawString(64, 32, WELCOME);
   display.display();
 
+  displayState = 1;
 
-    WiFi.begin(SSID, PWD);
-    while (WiFi.status() != WL_CONNECTED) {
-      Serial.print(".");
-      delay(500);
-    }
+  preferences.begin("WiFi", false);
+  String savedSSID = preferences.getString("SSID");
+
+  setupBLE();
+  if (savedSSID.length() > 0) {
+    String wifiPw = preferences.getString("Password");
+    connectToWiFi(savedSSID.c_str(), wifiPw.c_str());
+  } else {
+      displayState = 6;
+  }
+  preferences.end();  
  
-  Serial.print("Connected! IP Address: ");
-  Serial.println(WiFi.localIP());  
-  setup_routing();     
+       
   setup_task();
 
-  displayState = 1;
+  
   hasStateChanged = true;
 }
 
@@ -406,6 +549,14 @@ void loop() {
         break;
       case 5:
          display.drawString(64, 32, BON_APPETIT);
+         break;
+      case 6:
+          display.drawString(64, 16, F("Setup"));
+          display.drawString(64, 48, F("Einrichten per App"));
+          break;
+      case 7:
+          display.drawString(64, 16, F("Verbunden"));
+          display.drawString(64, 48,  WiFi.localIP().toString());
         break;
     }
     display.display();
