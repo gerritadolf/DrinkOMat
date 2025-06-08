@@ -13,7 +13,7 @@
 
 // BLE variables
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define MESSAGE_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define MESSAGE_UUID        "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
 #define DEVINFO_UUID (uint16_t)0x180a
 #define DEVINFO_MANUFACTURER_UUID (uint16_t)0x2a29
@@ -81,15 +81,15 @@ struct ReceiptStep{
 std::vector<ReceiptStep> steps;
 
 int valves[] = {
-  V1,
-  V1,
-  V2,
-  V3,
-  V4,
-  V5,
-  V6,
-  V7,
-  V8 // carbonated valve
+  V1, // CHANGE TO 2
+  V1, // CHANGE TO 2
+  V2, // CHANGE TO 7
+  V3, // CHANGE TO 4
+  V4, // CHANGE TO 3
+  V5, // NOT BELEGT
+  V6, // NOT BELEGT
+  V7, // NOT BELEGT
+  V8 // REMOVE RESERVATION
 };
 
 bool isBlinking = false;
@@ -477,6 +477,12 @@ void setup_debug() {
 }
 
 void setup() {
+  // digitalWrite(V1, LOW); // GPIO2
+  // digitalWrite(V2, HIGH); // GPIO0
+
+  digitalWrite(MEMBRANE_PUMP, LOW);
+  digitalWrite(PERISTALTIC_PUMP, LOW);
+
   for(int valve : valves) {
       pinMode(valve, OUTPUT);
   }
